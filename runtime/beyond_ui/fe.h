@@ -116,6 +116,9 @@ UpdateState update_state();
 std::string update_notes_url();
 bool update_rollback(std::string* msg, bool* rebuild, bool* restart);
 bool update_restart();   // starts the game's EXE again; the caller then exits
+bool update_backup_exists();   // Undo has something to put back
+void update_startup();         // Linux: a new AppImage whose recompiler differs asks for the rebuild
+void update_setup_done();      // setup or a rebuild finished: the game code matches this recompiler
 
 // ---------------------------------------------------------------- controllers (front end only; the game has its own)
 struct PadInfo { int index; std::string name; };

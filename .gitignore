@@ -24,6 +24,7 @@ vulkan_native/
 linux/test/
 linux/dist/MetroidPrime4Recomp-Linux/
 linux/dist/*.tar.gz
+linux/dist/update-linux.txt
 linux/dist/*.AppImage
 linux/appimage/cache/
 linux/appimage/AppDir/

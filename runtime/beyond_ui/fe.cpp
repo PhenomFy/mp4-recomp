@@ -277,7 +277,7 @@ static void setup_screen(ImVec2 a, ImVec2 b) {
         std::vector<std::string> tail(g_job.log.end() - std::min<size_t>(g_job.log.size(), 400), g_job.log.end());
         setup_unlock();
         if (done && !running && g_ss == SS_RUNNING) {
-            g_ss = SS_DONE; g_focus_first = true;
+            g_ss = SS_DONE; g_focus_first = true; update_setup_done();
             if (!g_old.empty()) { MigrateResult m = migrate(g_old[0], g_mig_settings, g_mig_saves, g_mig_mods, g_mig_caches); g_mig_report = m.text; g_ini.load(P.ini); }
             if (g_first_install && !g_restart_after_setup && (g_old.empty() || !g_mig_settings) && g_ini.get("auto_set", "").empty()) {
                 Rec r = recommend(); apply_rec(r); g_ini.save(); g_ini_dirty = false;   // CONTINUE reloads the .ini from disk
@@ -339,8 +339,13 @@ static void update_rows(bool banner) {
     case UP_AVAILABLE:
         if (row_button("##upd", fmt("Version %s is available (you have %s)", u.latest.c_str(), have.c_str()).c_str(), "UPDATE", true)) update_install_async();
         if (row_button("##updn", "What's new in it", "OPEN")) open_in_explorer(update_notes_url());
+#ifdef _WIN32
         if (!banner) help_text("Only the files that changed are downloaded, each one is checked before anything is replaced, and the "
                                "replaced files are kept so you can go back. Your saves and settings are not touched.");
+#else
+        if (!banner) help_text("The new AppImage is downloaded next to this one and checked before it replaces it; this one is kept "
+                               "so you can go back. Your saves and settings are not touched.");
+#endif
         break;
     case UP_DOWNLOADING:
         progress_bar(u.pct / 100.0f, {ImGui::GetContentRegionAvail().x, S(40)}, fmt("%s  —  %.0f%%", u.what.c_str(), u.pct).c_str());
@@ -390,9 +395,7 @@ static void page_play() {
     ImGui::Dummy({1, S(8)});
     if (big_button("##play", "PLAY", {S(420), S(86)})) { if (ready) g_play = true; else go(PG_SETUP); }
     ImGui::Dummy({1, S(14)});
-#ifdef _WIN32
     { UpStage st = update_state().stage; if (st == UP_AVAILABLE || st == UP_DOWNLOADING || st == UP_REBUILD || (st == UP_INSTALLED && update_state().restart)) { update_rows(true); ImGui::Dummy({1, S(10)}); } }
-#endif
     // three tiles
     float w = ImGui::GetContentRegionAvail().x, tw = (w - S(24)) / 3, th = S(108);
     std::string rn = get("renderer"); const char* rl = rn == "vulkan" ? "Vulkan output" : rn == "vulkan_native" ? "Native Vulkan" : "OpenGL";
@@ -426,19 +429,23 @@ static void page_play() {
     if (row_button("##bk", "Back up saves now", "BACK UP")) { std::string z, e; if (backup_saves(&z, &e)) flash("Saves backed up: " + z); else flash("Backup failed: " + e); }
     if (row_button("##ob", "Open backups folder", "OPEN")) { make_dirs(backups_dir()); open_in_explorer(backups_dir()); }
     if (row_button("##os", "Open saves folder", "OPEN")) { if (have) open_in_explorer(join(P.data, "save")); else flash("No saves yet."); }
-#ifdef _WIN32   // Linux: the Steam shortcut and updates from the releases page aren't there yet
+#ifdef _WIN32   // Linux: no Steam shortcut yet
     section("STEAM");
     if (row_button("##steam", "Add Metroid Prime 4 Beyond to Steam as a non-Steam game", "ADD")) {
         std::string m; steam_add_shortcut(P.exe, P.exedir, m); flash(m); }
     help_text("Uses this game's icon. Steam is closed and started again if it's running.");
+#endif
     section("UPDATES");
     update_rows(false);
     { UpStage st = update_state().stage; if (st != UP_CHECKING && st != UP_DOWNLOADING && st != UP_AVAILABLE && row_button("##updc", "Check for a new version now", "CHECK")) update_check_async(); }
     { bool v = get("check_updates") != "0"; if (row_bool("##updauto", "Check for a new version when this screen opens", &v)) set("check_updates", v ? "1" : "0"); }
-    if (dir_exists(join(P.exedir, "update_backup")) && row_button("##updu", "Go back to the version before the last update", "UNDO")) {
+    if (update_backup_exists() && row_button("##updu", "Go back to the version before the last update", "UNDO")) {
         std::string m; bool rb = false, rs = false;
         if (update_rollback(&m, &rb, &rs)) { flash(m); if (rb) start_rebuild(rs); else if (rs) { g_do_restart = true; g_quit = true; } } else flash(m); }
+#ifdef _WIN32
     help_text("Updates come from this project's GitHub releases page and only replace this game's own files.");
+#else
+    help_text("Updates come from this project's GitHub releases page and replace the AppImage you started (the previous one is kept for Undo).");
 #endif
     section("PROBLEMS");
     if (row_button("##report", "Report a problem: pack the logs and open the bug report page", "REPORT")) report_problem();
@@ -1104,6 +1111,8 @@ extern "C" int fe_run(void*) {
     load_fonts(io); apply_style(1.0f);
     ImGui_ImplOpenGL3_Init("#version 150");
     pads_init();
+    update_startup();
+    if (g_ini.get("check_updates", "1") != "0" && (!g_test || getenv("SWR_UPDATE_URL"))) update_check_async();
     double last = x_now();
     while (!g_quit && !g_play) {
         x_events();
@@ -1128,6 +1137,7 @@ extern "C" int fe_run(void*) {
     pads_shutdown();
     ImGui_ImplOpenGL3_Shutdown(); ImGui::DestroyContext();
     x_close();
+    if (g_do_restart) update_restart();   // an update replaced the AppImage: the new one takes over
     if (g_quit) return 1;
     apply_env(g_ini);
     return 0;

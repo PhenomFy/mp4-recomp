@@ -1,6 +1,6 @@
 // Front end, Linux side of fe.h (fe_sys.cpp is the Windows one): files, the setup process, save backups, mods,
 // controllers (SDL2, loaded at run time like the game does) and hardware detection. Folder pickers are zenity or
-// kdialog, "open" is xdg-open. Updates, the Steam shortcut and moving an older installation over are Windows-only.
+// kdialog, "open" is xdg-open. The Steam shortcut and moving an older installation over are Windows-only (updates: fe_update_linux.cpp).
 #include "fe.h"
 #include <cstdio>
 #include <cstring>
@@ -429,14 +429,6 @@ bool mod_remove(const std::string& name) {
 }
 int steam_add_shortcut(const std::string&, const std::string&, std::string& msg) { msg = "Not available on Linux yet: add the AppImage to Steam with Add a Non-Steam Game."; return -1; }
 
-// ---------------------------------------------------------------- updates (fe_update.cpp): Windows-only for now
-std::string installed_version() { return ""; }
-void update_check_async() {}
-void update_install_async() {}
-UpdateState update_state() { return {}; }
-std::string update_notes_url() { return ""; }
-bool update_rollback(std::string* msg, bool*, bool*) { if (msg) *msg = "Not available on Linux."; return false; }
-bool update_restart() { return false; }
 
 // ---------------------------------------------------------------- controllers: SDL2 from the system, as the game loads it (backend_x11.c)
 typedef void* GC;

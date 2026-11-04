@@ -244,6 +244,10 @@ bool update_rollback(std::string* msg, bool* rebuild, bool* restart) {
     return true;
 }
 
+bool update_backup_exists() { return dir_exists(join(P.exedir, "update_backup")); }
+void update_startup() {}       // Windows: install_thread says when recompiler\ changed
+void update_setup_done() {}
+
 // ---------------------------------------------------------------- restart into the new EXE
 bool update_restart() {
     STARTUPINFOW si = {sizeof si}; PROCESS_INFORMATION pi;

@@ -85,6 +85,14 @@ install from an earlier build in `~/.local/share/MetroidBeyondRecomp` is moved t
 shader caches included.
 Settings are in `Metroid Prime 4 Beyond.ini` there, rewritten with every option explained on the first start.
 
+**Updates:** the Play screen checks this project's latest release when it opens (its UPDATES section, further down, also has
+a CHECK button and the setting to turn it off). When there is a newer build it offers UPDATE: the new AppImage is downloaded next to the one
+you started, checked against its SHA-256 and put in its place, and the launcher starts again; the previous AppImage is
+kept as `<name>.previous` (UNDO puts it back). If the update changed the recompiler, the Play screen asks to rebuild
+the game code (a few minutes). Downloads use the system's libcurl (the `curl` package). With `skip_launcher=1` the
+check happens when you open the Play screen (`--launcher`). Builds before 2026-11-04 have no updater: download that
+release once by hand.
+
 ## Saves
 
 Saves are plain files in:
@@ -340,7 +348,9 @@ bash linux/setup_and_build_runtime.sh
 bash linux/make_appimage.sh
 ```
 
-`make_appimage.sh` produces `linux/dist/Metroid_Prime_4_Recomp-x86_64.AppImage`. To run from the source tree without
+`make_appimage.sh` produces `linux/dist/Metroid_Prime_4_Recomp-x86_64.AppImage` and `update-linux.txt` (its version, the
+UTC build time, its SHA-256 and the ID of the recompiler it brings); `bash linux/publish_release.sh [TAG]` uploads both
+to the latest release (or TAG), which is what the launcher's updater reads. To run from the source tree without
 the AppImage instead: `bash linux/setup_game.sh GAME_FOLDER [UPDATE_FOLDER]`, then `bash linux/run.sh`.
 
 ## Credits

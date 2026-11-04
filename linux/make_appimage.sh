@@ -4,7 +4,8 @@
 # (Bootlin) and Python (python-build-standalone), so the player needs neither. No game files inside.
 # The game is installed in ~/.local/share/MetroidPrime4Recomp (MP4_RECOMP_HOME moves it), see appimage/AppRun.
 # Downloads are checked against the SHA-256 below and kept in linux/appimage/cache.
-# Output: linux/dist/Metroid_Prime_4_Recomp-x86_64.AppImage
+# Output: linux/dist/Metroid_Prime_4_Recomp-x86_64.AppImage and update-linux.txt, what the launcher's updater reads
+# (fe_update_linux.cpp): publish both with linux/publish_release.sh
 set -e -o pipefail
 source "$(dirname "$(readlink -f "$0")")/env.sh"
 need curl "curl"; need "$PY" "python3"
@@ -39,8 +40,15 @@ SI="$C/sysinc"; SL="$C/syslib"; rm -rf "$SI" "$SL"; mkdir -p "$SI" "$SL"
 for d in X11 GL KHR libavcodec libavutil vulkan vk_video; do [ -d "/usr/include/$d" ] && ln -s "/usr/include/$d" "$SI/$d"; done
 for l in X11 GL; do f=$(ls /usr/lib/lib$l.so.? /usr/lib64/lib$l.so.? /usr/lib/x86_64-linux-gnu/lib$l.so.? 2>/dev/null | head -1 || true)
   [ -n "$f" ] || { echo "error: no lib$l.so on this machine" >&2; exit 1; }; ln -s "$f" "$SL/lib$l.so"; done
+# what the updater compares: the build's version (its UTC time, so every build is newer than the last) and the ID of
+# what makes the game code (translator, the headers the game code is compiled with, its patches, the bundled GCC): a
+# different ID after an update asks for the rebuild
+VERSION=$(date -u +%Y.%m.%d.%H%M)
+COMMIT=$(git -C "$W" rev-parse --short HEAD 2>/dev/null || echo unknown); git -C "$W" diff --quiet HEAD 2>/dev/null || COMMIT="$COMMIT-modified"
+RID=$( { cat "$W"/{switchrecomp,codegen,a64,nxloader,metroid_perf}.py "$W/beyond/fov_hooks.txt" "$W/runtime/cpu.h" "$W/runtime/cpu_helpers.c" "$W/linux/lx_compat.h"
+         [ -f "$W/beyond/beyond_patches.json" ] && cat "$W/beyond/beyond_patches.json"; echo "$GCC_SHA"; } | sha256sum | cut -c1-16)
 rm -f "$RUNTIME"   # so a failed build cannot leave the distro-built one in place
-SWR_RUNTIME_CC="$BGCC" SWR_RUNTIME_DEFS="-idirafter $SI -L$SL -Wl,--allow-shlib-undefined" SWR_RELEASE=1 \
+SWR_RUNTIME_CC="$BGCC" SWR_RUNTIME_DEFS="-idirafter $SI -L$SL -Wl,--allow-shlib-undefined -DSWR_APPIMAGE_VERSION=\"$VERSION\" -DSWR_APPIMAGE_COMMIT=\"$COMMIT\" -DSWR_RECOMPILER_ID=\"$RID\"" SWR_RELEASE=1 \
   bash "$W/linux/setup_and_build_runtime.sh" > /dev/null
 # what the player's machine needs: no CPU level above the baseline, no glibc newer than the toolchain's
 readelf -n "$RUNTIME" | grep -q 'ISA needed:.*x86-64-v[234]' && { echo "error: the runtime needs a newer CPU than x86-64" >&2; exit 1; }
@@ -102,3 +110,6 @@ mkdir -p "$(dirname "$OUT")"
 du -sh "$R/gcc" "$R/python" "$A"
 ARCH=x86_64 "$C/appimagetool" --appimage-extract-and-run --no-appstream "$A" "$OUT"
 ls -la "$OUT"
+printf 'version %s\ncommit %s\nappimage %s %s %s\nrecompiler %s\n' "$VERSION" "$COMMIT" "$(sha256sum "$OUT" | cut -d" " -f1)" "$(stat -c %s "$OUT")" "$(basename "$OUT")" "$RID" \
+  > "$(dirname "$OUT")/update-linux.txt"
+cat "$(dirname "$OUT")/update-linux.txt"
