@@ -508,8 +508,10 @@ static void inst(Ctx* c, u32 idx, u64 w, const Op* op){
     if(B(w,10,2)==1) src=T("unpackHalf2x16(%s).%c",opB(c,w,id-O_F2I_R),B(w,41,1)?'y':'x');
     src=fneg_abs(src,B(w,49,1),B(w,45,1));
     static const char* fn[4]={"roundEven","floor","ceil","trunc"}; src=T("%s(%s)",fn[B(w,39,2)],src);
-    if(B(w,12,1)) setr(c,d,T("uint(int(clamp(%s,-2147483648.0,2147483520.0)))",src));
-    else setr(c,d,T("uint(clamp(%s,0.0,4294967040.0))",src));
+    /* NaN converts to 0 (GLSL leaves clamp and int() of a NaN undefined: Sol Valley's pow(0, 0) ring index became a
+       garbage page-table coordinate on radeonsi and those ground tiles drew black) */
+    if(B(w,12,1)) setr(c,d,T("f2is(%s)",src));
+    else setr(c,d,T("f2iu(%s)",src));
     break; }
   case O_I2F_R: case O_I2F_C: case O_I2F_I: {
     char* s=opB(c,w,id-O_I2F_R); u32 fmt=B(w,10,2), sel=B(w,41,2); int sg=B(w,13,1);
@@ -971,14 +973,18 @@ static void inst(Ctx* c, u32 idx, u64 w, const Op* op){
       case 5: crd=T("ivec2(%s,%s)",R(c,ra),R(c,ra+1)); lod=T("int(%s)",R(c,rb)); break;
       case 6: crd=T("ivec2(%s,%s)",R(c,ra),R(c,ra+1)); break;
       case 7: type=2; crd=T("ivec3(%s,%s,%s)",R(c,ra),R(c,ra+1),R(c,rb)); break;
-      case 8: array=1; crd=T("ivec3(%s,%s,%s)",R(c,ra+1),R(c,rb),R(c,ra)); break;
+      /* 2D array: x, y from Rb, Rb+1 and the layer from Ra (as Ryujinx decodes it). Ra+1, Rb read the heightmap
+         transposed: Sol Valley's ground had holes where the mirrored spot was a chasm */
+      case 8: array=1; crd=T("ivec3(%s,%s,%s)",R(c,rb),R(c,rb+1),R(c,ra)); break;
       case 12: crd=T("ivec2(%s,%s)",R(c,ra),R(c,ra+1)); lod=T("int(%s)",R(c,rb)); ofs=R(c,rb+1); break;
       default: crd=T("ivec2(%s,%s)",R(c,ra),R(c,rb)); break;
     }
     int s=tex_slot(c,off,type,array,0,1);
     if(type==0) crd=T("ivec2(%s, 0)",crd);
     if(ofs) crd=T("(%s + ivec2(bitfieldExtract(int(%s),0,4),bitfieldExtract(int(%s),4,4)))",crd,ofs,ofs);
-    if(type==1 && (c->stage==ST_FS || c->stage==ST_VS)){ crd=T("swr_fc(%s, %d)",crd,s); c->si->uses_position_in=1; }
+    /* swr_fc is for 2D render targets only (arrays are never stored scaled): an array fetch went through it as an ivec3,
+       which has no overload, and the shader failed to compile (Sol Valley's ground was missing) */
+    if(type==1 && !array && (c->stage==ST_FS || c->stage==ST_VS)){ crd=T("swr_fc(%s, %d)",crd,s); c->si->uses_position_in=1; }
     const char* smp= T("texelFetch(tex%d, %s, %s)",s,crd,lod);
     emitl(c,"{ vec4 t_ = %s;",IW(c,s,smp)); c->indent++; write_texs(c,w,"t_",!B(w,59,1)); c->indent--; emitl(c,"}");   /* bit59: fp32 */
     break; }
@@ -1018,7 +1024,9 @@ static void inst(Ctx* c, u32 idx, u64 w, const Op* op){
     if(array && id!=O_TLD) crd=T("vec%d(%s, float(%s))",dim+1,crd,arr);
     if(array && eid==O_TLD) crd=T("ivec%d(%s, int(%s))",dim+1,crd,arr);
     const char* smp;
-    if(eid==O_TMML){ smp= g_glsl_es? "vec4(0.0)" : T("vec4(textureQueryLod(tex%d, %s), 0.0, 0.0)",s,crd); }
+    /* TMML returns fixed point (level * 256 as an integer), x and y in the opposite order to textureQueryLod (as Ryujinx
+       has it). The raw floats were read as integers by Sol Valley's ground (float(r)/256 picks its texture ring): black */
+    if(eid==O_TMML){ smp= g_glsl_es? "vec4(0.0)" : T("vec4(intBitsToFloat(ivec2(textureQueryLod(tex%d, %s).yx*256.0)), 0.0, 0.0)",s,crd); }
     else if(eid==O_TLD){ if(dim==2 && !array && (c->stage==ST_FS || c->stage==ST_VS)){ crd=T("swr_fc(%s, %d)",crd,s); c->si->uses_position_in=1; }
       smp=T("texelFetch(tex%d, %s, %s)",s,crd,lod?lod:"0"); }
     else if(eid==O_TLD4){ u32 comp=B(w,56,2); smp= dc? T("textureGather(tex%d, %s, %s)",s,crd,dref) : T("textureGather(tex%d, %s, %u)",s,crd,comp); }
@@ -1464,6 +1472,8 @@ char* shader_to_glsl(const u8* code, u32 max_bytes, int stage, ShaderInfo* si){
     for(const char* q=b; (q=strstr(q,"fmz(")); q++) if(q==b || q[-1]!='f'){ f1=1; break; }
     if(f1) sb_put(D,"float fmz(float a, float b){ return (a==0.0 || b==0.0) ? 0.0 : a*b; }\n");
     if(f2) sb_put(D,"float ffmz(float a, float b, float c){ return (a==0.0 || b==0.0) ? c : fma(a,b,c); }\n");
+    if(strstr(b,"f2is(")) sb_put(D,"uint f2is(float x){ return isnan(x) ? 0u : uint(int(clamp(x,-2147483648.0,2147483520.0))); }\n");
+    if(strstr(b,"f2iu(")) sb_put(D,"uint f2iu(float x){ return isnan(x) ? 0u : uint(clamp(x,0.0,4294967040.0)); }\n");
     if(strstr(b,"fsat(")) sb_put(D,"float fsat(float x){ return isnan(x) ? 0.0 : clamp(x,0.0,1.0); }\n");
     if(strstr(b,"fmn(")) sb_put(D,"float fmn(float a, float b){ return isnan(a) ? b : (isnan(b) ? a : min(a,b)); }\n");
     if(strstr(b,"fmx(")) sb_put(D,"float fmx(float a, float b){ return isnan(a) ? b : (isnan(b) ? a : max(a,b)); }\n"); }
@@ -1473,6 +1483,10 @@ char* shader_to_glsl(const u8* code, u32 max_bytes, int stage, ShaderInfo* si){
      Screen-space passes commonly write only X/Y; undefined Z/W can clip a
      whole quad or one triangle depending on preceding GPU execution. */
   if(c->stage==ST_VS) sb_put(D,"  gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n");
+  /* outputs the shader leaves unwritten read as (0,0,0,1) in the next stage (as yuzu sets them), not undefined: Sol Valley's
+     ground overlay reads a material index from a component its vertex shader never writes, and radeonsi's garbage there
+     sent it down a path that made NaN (black tiles while turning) */
+  if(c->stage==ST_VS) for(int i=0;i<32;i++) if(c->out_used[i]) sb_f(D,"  out_attr%d = vec4(0.0, 0.0, 0.0, 1.0);\n",i);
   if(c->stage==ST_VS && !g_glsl_es && !c->si->writes_point_size) sb_put(D,"  gl_PointSize = 1.0;\n");
   /* VS regs are precise. depth prepass and color pass use different shaders with the same position math;
      if the driver fuses an fma in only one of them, depths differ by an ulp and the EQUAL test fails */

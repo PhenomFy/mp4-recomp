@@ -1094,7 +1094,7 @@ static void aw_write(const char* path, const void* d, size_t n, int append);
 
 /* common epilogue stuff: alpha test for FS, Y flip for VS */
 
-#define TR_VER 5184   /* bump when the GLSL output changes, invalidates caches */
+#define TR_VER 5189   /* bump when the GLSL output changes, invalidates caches */
 /* the file is named after the version: the loader stops at the first entry of another version, so a bump with a fixed
    name left every new entry unread behind the old ones (all shaders translated again each launch, the file growing) */
 #define TR_HEX_(v) 0x##v##u
@@ -1232,6 +1232,9 @@ static Sh* shader_get(u64 gva_code, int stage, u32 attr_int, u32 attr_sint){
   if(stage==ST_VS) src=dlg_vs_xfb(src);   /* DLAA: positions captured for motion vectors */
   s->src=src; src=NULL;   /* only compiled if it isn't in the disk cache */
   s->xfb= stage==ST_VS && s->src && strstr(s->src,"xfb_offset")!=NULL;
+  { static const char* od=(const char*)1; if(od==(const char*)1) od=getenv("SWR_SHADER_OVERRIDE_DIR");   /* test only: <dir>/<hash>_vs.glsl replaces the translation */
+    if(od && s->src){ char pth[512]; snprintf(pth,sizeof pth,"%s/%016llx_%s.glsl",od,(unsigned long long)h,stage==ST_VS?"vs":stage==ST_GS?"gs":"fs"); FILE* f=fopen(pth,"rb");
+      if(f){ fseek(f,0,SEEK_END); long n=ftell(f); rewind(f); char* o=malloc((size_t)n+1); if(o && fread(o,1,(size_t)n,f)==(size_t)n){ o[n]=0; free(s->src); s->src=o; LOG("shaders: %016llx replaced by %s\n",(unsigned long long)h,pth); } else free(o); fclose(f); } } }
   { static int dump=-1; if(dump<0){ dump=getenv("SWR_DUMP_SHADERS")!=NULL; } if(dump && s->src){ char pth[256]; snprintf(pth,sizeof pth,"shader_%016llx_%d.glsl",(unsigned long long)h,stage); FILE* f=fopen(pth,"w"); if(f){ fputs(s->src,f); fclose(f);} } }
   free(src); free(tmp);
   s->next=shh[h&1023]; shh[h&1023]=s; return s; }
@@ -2777,6 +2780,11 @@ static void trace_frame(void){
     trace_note("==== end of frame. textures used: %d ====\n",g_tr_ntex);
     for(int i=0;i<g_tr_ntex;i++){ Tex* t=g_tr_tex[i];
       trace_note("tex #%d %llx %ux%ux%u fmt=%x target=%x levels=%u rt=%d\n",i,(unsigned long long)t->gva,t->w,t->h,t->d,t->fkey,t->target,t->levels,t->is_rt);
+      { const char* rw=getenv("SWR_TRACE_RAW"); if(rw && strtoull(rw,NULL,16)==t->gva && !t->f.compressed){   /* test only: level 0 as floats + the guest bytes */
+          size_t n=(size_t)t->w*t->h*(t->target==GL_TEXTURE_2D? 1 : t->d)*4; float* px=malloc(n*4); char pth[256];
+          if(px){ glBindTexture(t->target,t->id); glPixelStorei(GL_PACK_ALIGNMENT,4); glGetTexImage(t->target,0,GL_RGBA,GL_FLOAT,px); snprintf(pth,sizeof pth,"captures/traces/raw_%llx_%ux%u_gl.f32",(unsigned long long)t->gva,t->w,t->h); FILE* f=fopen(pth,"wb"); if(f){ fwrite(px,4,n,f); fclose(f); } free(px); mb_reset(); }
+          u8* g=gmem_ptr(t->gva,t->size); snprintf(pth,sizeof pth,"captures/traces/raw_%llx_%ux%u_mem.bin",(unsigned long long)t->gva,t->w,t->h); if(g){ FILE* f=fopen(pth,"wb"); if(f){ fwrite(g,1,t->size,f); fclose(f); } }
+          trace_note("   raw dump: %ux%ux%u size %llu\n",t->w,t->h,t->d,(unsigned long long)t->size); } }
       if(!t->f.depth && !t->f.is_int && !t->f.compressed && (u64)t->w*t->h*t->d<=4096 && !g_gles && (t->target==GL_TEXTURE_2D || t->target==GL_TEXTURE_3D)){
         /* small textures (exposure, LUTs): first texel + average */
         u32 W=t->is_rt? SC(t->w) : t->w, H=t->is_rt? SC(t->h) : t->h, D= t->target==GL_TEXTURE_3D? t->d : 1; float* px=malloc((size_t)W*H*D*16);

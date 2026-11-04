@@ -273,6 +273,9 @@ from the same save), traced to a root cause and checked again in the game.
   `SWR_TEST_EXIT_FRAME` to stop. This is how most bugs above were reproduced without the player.
 - **Frame traces** (F5, or `SWR_TRACE=<frame>`): every draw with its shaders, textures (including the raw descriptor
   words), buffers and a render-target snapshot.
+- **`SWR_SHADER_OVERRIDE_DIR=dir`** compiles `dir/<hash>_vs.glsl` (or `_fs`, `_gs`) instead of the translation, to test a
+  change to one shader; **`SWR_TRACE_RAW=address`** writes a traced texture as floats and its guest memory next to the
+  trace; **`SWR_TRACE_DMA_RANGE=address:size`** logs the copy-engine and 2D-engine writes into a range.
 - **`SWR_DBG_FS=hash@anchor@expr`** shows a pixel shader's intermediate value on screen.
 - **First-draw shader log** says why each shader wasn't pre-built ("not found in GPU memory yet", "found 2.1 s ago, 66
   ahead of it", "translated without constant values", …).

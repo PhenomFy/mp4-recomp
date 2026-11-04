@@ -225,6 +225,8 @@ void fermi2d_method(GpuChannel* ch, u32 m, u32 v){
     double sx=(double)sx0/4294967296.0, sy=(double)sy0/4294967296.0, sdx=(double)dudx/4294967296.0, sdy=(double)dvdy/4294967296.0;
     /* CENTER origin (sample_mode bit0 == 0): coords address texel centers */
     if(!(r[0x223]&1)){ sx-=sdx*0.5; sy-=sdy*0.5; if(sx<0) sx=0; if(sy<0) sy=0; }
+    { static u64 wa=1, we; if(wa==1){ const char* e=getenv("SWR_TRACE_DMA_RANGE"); wa=0; if(e){ wa=strtoull(e,(char**)&e,16); we= *e==':'? wa+strtoull(e+1,NULL,16) : wa+1; } }
+      if(we && dst.addr<we && dst.addr+(u64)dst.height*dst.width*16>wa){ static int n; if(n++<400) LOG("2d-range: dst %llx fmt %x %ux%u d=%u l=%u %s bh=%u rect %d,%d %dx%d <- src %llx fmt %x %ux%u\n",(unsigned long long)dst.addr,dst.format,dst.width,dst.height,dst.depth,dst.layer,dst.linear?"pitch":"bl",dst.bh,dx0,dy0,dw,dh,(unsigned long long)src.addr,src.format,src.width,src.height); } }
     if(r3d_blit(&src,&dst,dx0,dy0,dw,dh,sx,sy,sdx,sdy)) return;
     { static int said; if(said<20){ said++; LOG("2d: CPU blit %dx%d: src %llx fmt %x %ux%u %s -> dst %llx fmt %x %ux%u %s (scale %.3f,%.3f)\n",dw,dh,(unsigned long long)src.addr,src.format,src.width,src.height,src.linear?"pitch":"bl",(unsigned long long)dst.addr,dst.format,dst.width,dst.height,dst.linear?"pitch":"bl",sdx,sdy); } }
     extern int g_gl; extern void gpu_gl_rt_flush(u64); extern void gpu_gl_rt_reload(u64);
@@ -278,6 +280,9 @@ void dma_method(GpuChannel* ch, u32 m, u32 v){
     if(r[0x1C6]>1) dl=0; if(r[0x1CD]>1) sl=0;
     if(!dst_linear && dl){ u32 wbb=dw*(remap?bpp:1); u64 gh=8u<<dbh; u64 lsz=(((u64)wbb+63)&~63ull)*((dh+gh-1)/gh*gh); dst+=lsz*dl; }
     if(!src_linear && sl){ u32 wbb=sw*(remap?bpp:1); u64 gh=8u<<sbh; u64 lsz=(((u64)wbb+63)&~63ull)*((sh+gh-1)/gh*gh); src+=lsz*sl; } }
+  { static u64 wa=1, we; if(wa==1){ const char* e=getenv("SWR_TRACE_DMA_RANGE"); wa=0; if(e){ wa=strtoull(e,(char**)&e,16); we= *e==':'? wa+strtoull(e+1,NULL,16) : wa+1; } }   /* test only: hexaddr:hexsize */
+    if(we && dst<we && dst+((u64)(dh? dh : lines)*(dw? dw : pitch_out)*4+(256u<<10))>wa){ static int n; if(n++<4000) LOG("dma-range: %s->%s src=%llx dst=%llx (+%llx) pitch %u/%u len=%u lines=%u multi=%d remap=%d(%x) dst[bh=%u bd=%u w=%u h=%u d=%u l=%u x=%u y=%u] src[bh=%u w=%u h=%u d=%u l=%u x=%u y=%u]\n",
+      src_linear?"lin":"bl",dst_linear?"lin":"bl",(unsigned long long)src,(unsigned long long)dst,(unsigned long long)(dst-wa),pitch_in,pitch_out,line_len,lines,multi,remap,r[0x1C2],dbh,(r[0x1C3]>>8)&15,dw,dh,r[0x1C6],r[0x1C7],dx,dy,sbh,sw,sh,r[0x1CD],r[0x1CE],sx,sy); } }
   { static u64 ndma; ndma++; extern volatile u64 g_dma_copies; g_dma_copies=ndma; }
   { static int said; if(said<6){ said++; LOG("dma: %s->%s src=%llx dst=%llx pitch %u/%u len=%u lines=%u multi=%d remap=%d(%x) dst[bh=%u w=%u h=%u d=%u l=%u o=%x] src[bh=%u w=%u h=%u o=%x] launch=%x\n",
       src_linear?"lin":"bl",dst_linear?"lin":"bl",(unsigned long long)src,(unsigned long long)dst,pitch_in,pitch_out,line_len,lines,multi,remap,r[0x1C2],dbh,dw,dh,r[0x1C6],r[0x1C7],r[0x1C8],sbh,sw,sh,r[0x1CF],v); } }
