@@ -118,7 +118,7 @@ static int fs0_list(const Reg* r, Entry* out, int max){ u8 h[16]; reg_read(r,0,h
   free(e); return k; }
 
 /* ---------------------------------------------------------------- NCA */
-typedef struct { Reg r; u8 hdr[0xC00]; int type; u64 program; u8 key[16]; int haskey; } Nca;
+typedef struct { Reg r; u8 hdr[0xC00]; int type; u64 program; u8 key[16]; int haskey, gen; const char* keysrc; char name[64]; } Nca;
 struct Bktr;
 typedef struct { const Nca* n; u64 start, size; int enc; u64 hi; u8 fsh[0x200]; struct Bktr* bk; } Sec;
 static u8 g_tiks[64][32]; static int g_ntik;   /* rights ID + encrypted title key, from the .nsp's tickets */
@@ -131,14 +131,14 @@ static int nca_open(Nca* c, const Reg* r){ memset(c,0,sizeof *c); c->r=*r; if(r-
   reg_read(r,0,c->hdr,0xC00); xts_dec(key_need("header_key",32),c->hdr,0xC00,0);
   if(memcmp(c->hdr+0x200,"NCA3",4)) return 0;
   c->type=c->hdr[0x205]; c->program=rd64(c->hdr+0x210);
-  int gen= c->hdr[0x220]>c->hdr[0x206]? c->hdr[0x220] : c->hdr[0x206]; int idx= gen? gen-1 : 0; char nm[48];
+  int gen= c->hdr[0x220]>c->hdr[0x206]? c->hdr[0x220] : c->hdr[0x206]; int idx= gen? gen-1 : 0; char nm[48]; c->gen=gen;
   static const u8 zero[16]; const u8* rights=c->hdr+0x230;
   if(memcmp(rights,zero,16)){ const u8* enc=NULL; for(int i=0;i<g_ntik;i++) if(!memcmp(g_tiks[i],rights,16)) enc=g_tiks[i]+16;
     char rid[40]; for(int i=0;i<16;i++) sprintf(rid+2*i,"%02x",rights[i]);
     if(!enc){ const u8* tk=key_get(rid,16); if(!tk) nx_fail("No title key for this content (rights ID %s): the .nsp has no ticket and title.keys does not list it.",rid);
-      memcpy(c->key,tk,16); c->haskey=1; return 1; }   /* title.keys (Lockpick_RCM) holds them decrypted */
-    snprintf(nm,sizeof nm,"titlekek_%02x",idx); Aes k; aes_key(&k,key_need(nm,16)); aes_dec(&k,enc,c->key); c->haskey=1; }
-  else { snprintf(nm,sizeof nm,"key_area_key_application_%02x",idx); Aes k; aes_key(&k,key_need(nm,16)); aes_dec(&k,c->hdr+0x300+0x20,c->key); c->haskey=1; }
+      memcpy(c->key,tk,16); c->haskey=1; c->keysrc="title.keys"; return 1; }   /* title.keys (Lockpick_RCM) holds them decrypted */
+    snprintf(nm,sizeof nm,"titlekek_%02x",idx); Aes k; aes_key(&k,key_need(nm,16)); aes_dec(&k,enc,c->key); c->haskey=1; c->keysrc="its ticket"; }
+  else { snprintf(nm,sizeof nm,"key_area_key_application_%02x",idx); Aes k; aes_key(&k,key_need(nm,16)); aes_dec(&k,c->hdr+0x300+0x20,c->key); c->haskey=1; c->keysrc="the key area"; }
   return 1; }
 static int nca_section(const Nca* c, int i, Sec* s){ const u8* e=c->hdr+0x240+i*16; u32 a=rd32(e), b=rd32(e+4); if(!b || b<=a) return 0;
   memset(s,0,sizeof *s); s->n=c; s->start=(u64)a*0x200; s->size=(u64)(b-a)*0x200; memcpy(s->fsh,c->hdr+0x400+i*0x200,0x200);
@@ -153,6 +153,39 @@ static void sec_read_hi(const Sec* s, u64 off, u8* dst, size_t n, u64 hi){
   ctr_xor(&k,hi,(s->start+a)>>4,tmp,len/16); memcpy(dst,tmp+(off-a),n); }
 static void bk_read(struct Bktr* b, u64 off, u8* dst, size_t n);
 static void sec_read(const Sec* s, u64 off, u8* dst, size_t n){ if(s->bk) bk_read(s->bk,off,dst,n); else sec_read_hi(s,off,dst,n,s->hi); }
+static int nca_romfs(const Nca* c, Sec* s){ for(int j=0;j<4;j++) if(nca_section(c,j,s) && s->fsh[3]==3) return 1; return 0; }
+/* layers this reader doesn't apply: a sparse section (fs header 0x148, its generation at 0x170: an eShop download made while
+   an update was out holds only what the update doesn't replace) and a compressed one (0x178). Read as plain data they
+   come out wrong without any error, so they stop setup with the reason */
+static void sec_check_layers(const Sec* s, const char* what){
+  if(s->fsh[0x170] | s->fsh[0x171]) nx_fail("%s is stored sparse (an eShop download made while an update was already out), which setup cannot read yet. Dump the game from a game card, or report it with setup.log.",what);
+  if(rd64(s->fsh+0x180)) nx_fail("%s is stored compressed, which setup cannot read yet. Report it with setup.log.",what); }
+/* why a section may not decrypt: for a ticket's title key, the keys file's titlekek_XX can be checked against its own
+   master_key_XX (titlekek = AES-128-ECB-decrypt(master_key, titlekek_source)); a missing master key means a keys file
+   from older firmware than the game */
+static const char* key_hint(const Nca* c){ static char m[400]; int idx= c->gen? c->gen-1 : 0; char a[48], b[48];
+  if(!c->keysrc || strcmp(c->keysrc,"its ticket")) return "the keys file's key_area_key for it may be wrong, or the file is damaged";
+  snprintf(a,sizeof a,"titlekek_%02x",idx); snprintf(b,sizeof b,"master_key_%02x",idx);
+  const u8 *tk=key_get(a,16), *mk=key_get(b,16), *src=key_get("titlekek_source",16);
+  if(!mk) { snprintf(m,sizeof m,"the keys file has no %s: it was dumped on older firmware than this game needs. Dump the keys again from your Switch (Lockpick_RCM) on its current firmware",b); return m; }
+  if(src && tk){ Aes k; u8 d[16]; aes_key(&k,mk); aes_dec(&k,src,d); if(memcmp(d,tk,16)){ snprintf(m,sizeof m,"the keys file's %s does not match its %s: the file is mixed up or damaged. Dump the keys again from your Switch (Lockpick_RCM)",a,b); return m; } }
+  return "the keys file's titlekek for it may be wrong, or the file is damaged"; }
+/* the RomFS header (IVFC level 6) must read back: its size 0x50 and every table inside the level. A wrong key or the
+   wrong NCA fails here instead of producing 26 GB of wrong files */
+static int romfs_header_ok(const Sec* s){ const u8* iv=s->fsh+8; if(memcmp(iv,"IVFC",4)) return 0;
+  const u8* l6=iv+0x10+5*0x18; u64 base=rd64(l6), size=rd64(l6+8); u8 h[0x50]; sec_read(s,base,h,0x50);
+  if(rd64(h)!=0x50) return 0; for(int i=1;i<10;i++) if(rd64(h+8*i)>size) return 0; return 1; }
+/* the program NCA to use: an update's (its RomFS a patch) or the game's (never a patch), the exact program first.
+   An .nsp lists its NCAs by content ID, so the first one with the game's ID can be another program or an update
+   bundled into the file */
+static const Nca* pick_program(const Nca* n, int cnt, u64 want, int patch_wanted, const char* file){ const Nca* best=NULL; int bs=-1;
+  for(int i=0;i<cnt;i++){ if(n[i].type!=0 || (want && (n[i].program&~0xFFFull)!=(want&~0xFFFull))) continue;
+    Sec s; int has=nca_romfs(&n[i],&s), patch= has && s.enc==4;
+    printf("  %s: program %016llX, key generation %d, key from %s, %s\n",n[i].name,(unsigned long long)n[i].program,n[i].gen,n[i].keysrc? n[i].keysrc : "?",
+           has? (patch? "an update's RomFS" : "RomFS") : "no RomFS");
+    if(!patch_wanted && patch) continue;
+    int sc= (patch==patch_wanted)*4 + (want && n[i].program==want)*2 + has; if(sc>bs){ bs=sc; best=&n[i]; } }
+  (void)file; return best; }
 
 /* ---------------------------------------------------------------- an update's RomFS (BKTR)
    The update's RomFS section is a patch over the base game's: an indirect table maps every range of the patched
@@ -226,7 +259,7 @@ static int find_ncas(const Reg* r, Nca* out, int max){ Entry e[256]; int n=fs0_l
     for(int i=0;i<np;i++) if(!strcmp(p[i].name,"secure")) return find_ncas(&p[i].r,out,max);
     nx_fail("The .xci has no secure partition."); }
   for(int i=0;i<n;i++){ size_t l=strlen(e[i].name); if(l>4 && !strcmp(e[i].name+l-4,".tik")) tik_add(&e[i].r); }
-  for(int i=0;i<n && k<max;i++){ size_t l=strlen(e[i].name); if(l>4 && !strcmp(e[i].name+l-4,".nca") && nca_open(&out[k],&e[i].r)) k++; }
+  for(int i=0;i<n && k<max;i++){ size_t l=strlen(e[i].name); if(l>4 && !strcmp(e[i].name+l-4,".nca") && nca_open(&out[k],&e[i].r)){ snprintf(out[k].name,sizeof out[k].name,"%s",e[i].name); k++; } }
   return k; }
 
 int nx_extract_main(int argc, char** argv){
@@ -238,8 +271,8 @@ int nx_extract_main(int argc, char** argv){
   keys_load(keys,1); if(tkeys) keys_load(tkeys,0);
   FILE* f=fopen(file,"rb"); if(!f) nx_fail("Cannot open %s (%s).",file,strerror(errno));
   fseek64(f,0,SEEK_END); Reg whole={f,0,(u64)ftell64(f)};
-  static Nca ncas[64]; int n=find_ncas(&whole,ncas,64); const Nca* prog=NULL;
-  for(int i=0;i<n;i++) if(ncas[i].type==0 && (!want || (ncas[i].program&~0xFFFull)==(want&~0xFFFull))){   /* an update's program ID differs in its low bits */ prog=&ncas[i]; break; }
+  static Nca ncas[64]; int n=find_ncas(&whole,ncas,64);
+  printf("%s:\n",file); const Nca* prog=pick_program(ncas,n,want,basef!=NULL,file);   /* an update's program ID can differ in its low bits */
   if(!prog) nx_fail("%s has no program NCA%s (found %d NCAs). Is it the game or its update?",file,want? " for this game" : "",n);
   printf("program %016llX, key generation %d\n",(unsigned long long)prog->program,prog->hdr[0x220]>prog->hdr[0x206]? prog->hdr[0x220] : prog->hdr[0x206]);
   char ex[4096], ro[4096]; snprintf(ex,sizeof ex,"%s/exefs",out); snprintf(ro,sizeof ro,"%s/romfs",out);
@@ -250,12 +283,19 @@ int nx_extract_main(int argc, char** argv){
       if(s.enc==4){ /* an update: its RomFS is a patch over the base game's, which --base gives */
         if(!basef) nx_fail("This is an update: its RomFS is a patch over the game's, so the game file is needed too (choose both).");
         FILE* bf=fopen(basef,"rb"); if(!bf) nx_fail("Cannot open %s (%s).",basef,strerror(errno)); fseek64(bf,0,SEEK_END); Reg bw={bf,0,(u64)ftell64(bf)};
-        static Nca bn[64]; int nb=find_ncas(&bw,bn,64); const Nca* bp=NULL; for(int j=0;j<nb;j++) if(bn[j].type==0 && (bn[j].program&~0xFFFull)==(prog->program&~0xFFFull)){ bp=&bn[j]; break; }
-        if(!bp) nx_fail("%s is not the game this update is for (no program %016llX in it).",basef,(unsigned long long)(prog->program&~0xFFFull));
-        Sec bs; int ok=0; for(int j=0;j<4 && !ok;j++) if(nca_section(bp,j,&bs) && bs.fsh[3]==3) ok=1;
-        if(!ok) nx_fail("The game file has no RomFS.");
-        static struct Bktr bk; bk_open(&bk,&bs,&s); s.bk=&bk; got_ro=romfs_extract(&s,ro); fclose(bf); }
-      else got_ro=romfs_extract(&s,ro); } }
+        static Nca bn[64]; int nb=find_ncas(&bw,bn,64); printf("%s:\n",basef); const Nca* bp=pick_program(bn,nb,prog->program,0,basef);
+        if(!bp) nx_fail("%s is not the game this update is for (no program %016llX in it, or only an update).",basef,(unsigned long long)(prog->program&~0xFFFull));
+        Sec bs; if(!nca_romfs(bp,&bs)) nx_fail("The game file has no RomFS.");
+        sec_check_layers(&bs,"The game file's RomFS");
+        if(!romfs_header_ok(&bs)) nx_fail("The game file's RomFS does not decrypt (%s, key from %s, key generation %d): %s.",bp->name,bp->keysrc? bp->keysrc : "?",bp->gen,key_hint(bp));
+        printf("game: %s (program %016llX, key from %s)\n",bp->name,(unsigned long long)bp->program,bp->keysrc? bp->keysrc : "?");
+        sec_check_layers(&s,"The update's RomFS");
+        static struct Bktr bk; bk_open(&bk,&bs,&s); s.bk=&bk;
+        if(!romfs_header_ok(&s)) nx_fail("The game with the update applied does not read as a RomFS: the game file may not be the version this update is for.");
+        got_ro=romfs_extract(&s,ro); fclose(bf); }
+      else { sec_check_layers(&s,"The RomFS");
+        if(!romfs_header_ok(&s)) nx_fail("The RomFS does not decrypt (%s, key from %s, key generation %d): %s.",prog->name,prog->keysrc? prog->keysrc : "?",prog->gen,key_hint(prog));
+        got_ro=romfs_extract(&s,ro); } } }
   fclose(f);
   if(!got_ex) nx_fail("The program NCA has no ExeFS.");
   printf("@@P 100 Extracted|%s\n",got_ro? "ExeFS and RomFS" : "ExeFS only"); fflush(stdout);
