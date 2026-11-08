@@ -1,0 +1,36 @@
+
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check build prerequisites
+        shell: pwsh
+        run: |
+          Write-Host "Checking Windows build requirements"
+          if (!(Test-Path "gcc/Library/bin/gcc.exe")) {
+            Write-Host "GCC 14.2 is not bundled."
+          }
+          if (!(Test-Path "python/python.exe")) {
+            Write-Host "Python 3.12 is not bundled."
+          }
+
+      - name: Attempt Windows build
+        shell: cmd
+        run: call build.bat
+
+      - name: Upload Windows executable
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mp4-recomp-windows
+          path: bin/runtime_win64_win32.exe
+          if-no-files-found: error
